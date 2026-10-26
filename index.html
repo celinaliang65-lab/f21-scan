@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.8.1：序號改淺藍底；查詢清單文字改深色（iPhone 按鈕預設藍字）
      v0.8.0：報到顯示序號（NO.）並可用序號查詢；名冊載入手機即時查詢；前提議題未通過→免表決
      v0.7.0：報到可模糊查詢住戶（戶別、樓層、地址、姓名），點選直接帶出；報到畫面顯示地址
      v0.6.0：送出時附上「掃到→送出」秒數（會後分析用）；報到畫面姓名與比例同一列、字放大
@@ -43,10 +44,12 @@
   #reader.hit { border-color:#1D9E75; }
   .who-row { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin:4px 0 6px; flex-wrap:wrap; }
   .who-name { font-size:24px; font-weight:700; } .who-ratio { font-size:19px; color:var(--txt); }
+  #suggest .sg { color:var(--txt); -webkit-text-fill-color:var(--txt); }   /* iPhone 按鈕文字預設藍色，改回深色 */
+  #suggest .sg .sq { -webkit-text-fill-color:#185FA5; } #suggest .sg small { -webkit-text-fill-color:var(--sub); } #suggest .sg .ck { -webkit-text-fill-color:var(--green); }
   #suggest .sg { display:block; width:100%; text-align:left; margin:6px 0 0; padding:10px 12px; font-size:16px; border-radius:10px; }
   #suggest .sg b { font-size:19px; margin-right:8px; } #suggest .sg small { display:block; color:var(--sub); font-size:14px; margin-top:2px; }
   #suggest .sg .ck { float:right; font-size:13px; font-weight:700; color:var(--green); background:#E1F5EE; border-radius:6px; padding:1px 7px; }
-  #suggest .sg .sq, .seqtag { display:inline-block; font-size:15px; font-weight:700; color:#fff; background:var(--txt); border-radius:6px; padding:1px 7px; margin-right:8px; vertical-align:2px; }
+  #suggest .sg .sq, .seqtag { display:inline-block; font-size:15px; font-weight:700; color:#185FA5; background:#E6F1FB; border-radius:6px; padding:1px 7px; margin-right:8px; vertical-align:2px; }
   #suggest .more { font-size:14px; color:var(--sub); margin-top:6px; }
   .reading { background:#E1F5EE; color:var(--green); border-radius:10px; padding:16px; text-align:center; font-size:22px; font-weight:700; }
   .tip { font-size:14px; color:var(--sub); margin-top:6px; }
@@ -113,7 +116,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.8.0';
+var PAGE_VERSION = 'v0.8.1';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
