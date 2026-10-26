@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<!-- assembly-vote 現場系統：手機掃描頁（報到／唱票／監票管理）  v0.4.0  2026-10-26
+     兩種用法（同一個檔案）：
+     1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
+     2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
+        API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.4.0：新增外部網址模式、「拍照掃描」按鈕；v0.3.0：方案類按鈕、議題顯示編號 -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --txt:#1d2433; --sub:#5f6b7a; --line:#d9dee5; --blue:#185FA5; --green:#0F6E56; --red:#A32D2D; --amber:#854F0B; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"PingFang TC","Microsoft JhengHei",sans-serif; background:var(--bg); color:var(--txt); font-size:16px; }
+  .wrap { max-width:520px; margin:0 auto; padding:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
+  h1 { font-size:20px; margin:4px 0 12px; font-weight:600; }
+  label { display:block; font-size:14px; color:var(--sub); margin:10px 0 4px; }
+  input, select { width:100%; font-size:18px; padding:10px; border:1px solid var(--line); border-radius:8px; background:#fff; }
+  button { font-size:18px; padding:12px; border-radius:10px; border:1px solid var(--line); background:#fff; width:100%; margin-top:8px; }
+  button.pri { background:var(--blue); color:#fff; border-color:var(--blue); }
+  button.ok { background:var(--green); color:#fff; border-color:var(--green); font-size:26px; padding:20px; }
+  button.no { background:var(--red); color:#fff; border-color:var(--red); font-size:26px; padding:20px; }
+  button.gray { background:#eef0f3; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  .bar { display:flex; justify-content:space-between; align-items:center; background:var(--txt); color:#fff; padding:10px 12px; border-radius:10px; margin-bottom:10px; font-size:15px; }
+  .bar button { width:auto; margin:0; padding:6px 12px; font-size:14px; }
+  .tabs { display:flex; gap:6px; margin-bottom:10px; } .tabs button { margin:0; font-size:16px; padding:10px; }
+  .tabs button.on { background:var(--blue); color:#fff; border-color:var(--blue); }
+  .band { padding:8px 12px; border-radius:8px; font-weight:600; margin-bottom:10px; }
+  .big { font-size:30px; font-weight:700; }
+  .warn { background:#FAEEDA; color:var(--amber); border-radius:8px; padding:8px 10px; margin:8px 0; font-size:15px; }
+  .err { background:#FCEBEB; color:var(--red); border-radius:8px; padding:8px 10px; margin:8px 0; font-size:15px; }
+  .done { background:#E1F5EE; color:var(--green); border-radius:10px; padding:16px; text-align:center; }
+  .muted { color:var(--sub); font-size:14px; }
+  #reader { width:100%; border-radius:10px; overflow:hidden; }
+  .hidden { display:none; }
+  table { width:100%; border-collapse:collapse; font-size:14px; } td, th { border-bottom:1px solid var(--line); padding:6px 4px; text-align:left; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 登入 -->
+  <div id="vLogin" class="card">
+    <h1 id="title">區權會現場系統</h1>
+    <label>機號</label>
+    <select id="lMachine"></select>
+    <label>人員</label>
+    <select id="lStaff"></select>
+    <label>密碼（4 碼）</label>
+    <input id="lPin" type="password" inputmode="numeric" maxlength="4" autocomplete="off">
+    <div id="lErr"></div>
+    <button class="pri" onclick="doLogin()">開始</button>
+    <p class="muted" id="ver"></p>
+  </div>
+
+  <!-- 主畫面 -->
+  <div id="vMain" class="hidden">
+    <div class="bar"><span id="who"></span><button onclick="logout()">換人</button></div>
+    <div class="tabs" id="tabs"></div>
+
+    <div id="scanBox" class="card">
+      <div id="reader"></div>
+      <div class="row">
+        <button id="camBtn" class="gray" onclick="toggleCam()">開啟相機</button>
+        <button class="gray" onclick="$('photo').click()">拍照掃描</button>
+      </div>
+      <input id="photo" type="file" accept="image/*" capture="environment" class="hidden" onchange="photoScan(this)">
+      <div id="photoReader" class="hidden"></div>
+      <label>掃描槍或手動輸入（輸入完按 Enter）</label>
+      <input id="code" autocomplete="off" placeholder="例：B1-02F">
+      <div id="manualTopicBox">
+        <label>手動輸入戶別時，請選議題</label>
+        <select id="manualTopic"></select>
+      </div>
+      <div id="scanErr"></div>
+    </div>
+
+    <div id="panel"></div>
+    <div id="admin" class="hidden"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script type="application/json" id="bootData"><?!= boot ?></script>
+<script>
+// 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
+var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
+var BOOT = null, API_MODE = false;
+try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
+var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
+
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+function apiUrl() {
+  var q = (location.search.match(/[?&]api=([^&]+)/) || [])[1];
+  if (q) { try { localStorage.setItem('av_api', decodeURIComponent(q)); } catch (e) {} }
+  var u = q ? decodeURIComponent(q) : API_URL;
+  if (!u) { try { u = localStorage.getItem('av_api') || ''; } catch (e) {} }
+  if (u && u.indexOf('http') !== 0) u = 'https://script.google.com/macros/s/' + u + '/exec';
+  return u;
+}
+function call(fn) {
+  var args = Array.prototype.slice.call(arguments, 1);
+  if (API_MODE) {
+    var u = apiUrl();
+    if (!u) return Promise.reject('沒有設定 API 網址（網址後面加 ?api=部署ID）');
+    return fetch(u, { method: 'POST', body: JSON.stringify({ fn: fn, args: args }) })
+      .then(function (r) { return r.json(); }, function () { throw '網路連線失敗，請確認手機有網路後再試一次'; })
+      .then(function (x) { if (!x.ok) throw x.error; return x.result; });
+  }
+  return new Promise(function (ok, bad) {
+    var r = google.script.run.withSuccessHandler(ok).withFailureHandler(function (e) { bad(e && e.message ? e.message : String(e)); });
+    r[fn].apply(r, args);
+  });
+}
+function colorOf(name) {
+  var n = String(name || '');
+  var map = [['紅', '#FBEAF0', '#72243E'], ['粉', '#FBEAF0', '#72243E'], ['橘', '#FAECE7', '#712B13'], ['黃', '#FAEEDA', '#633806'],
+             ['米', '#F1EFE8', '#444441'], ['綠', '#EAF3DE', '#27500A'], ['藍', '#E6F1FB', '#0C447C'], ['紫', '#EEEDFE', '#3C3489'],
+             ['灰', '#F1EFE8', '#444441'], ['白', '#F1EFE8', '#444441']];
+  for (var i = 0; i < map.length; i++) if (n.indexOf(map[i][0]) >= 0) return { bg: map[i][1], fg: map[i][2] };
+  return { bg: '#E6F1FB', fg: '#0C447C' };
+}
+function band(t) { var c = colorOf(t.color); return '<div class="band" style="background:' + c.bg + ';color:' + c.fg + '">議題 ' + esc(t.label || ('0' + t.no).slice(-2)) + (t.color ? '・' + esc(t.color) + '色票' : '') + '<br><span style="font-weight:400">' + esc(t.title) + '</span></div>'; }
+function warnHtml(ws) { return (ws || []).map(function (w) { return '<div class="warn">⚠ ' + esc(w) + '</div>'; }).join(''); }
+function showErr(el, msg) { $(el).innerHTML = msg ? '<div class="err">' + esc(msg) + '</div>' : ''; }
+
+/* ---------- 登入 ---------- */
+function boot() {
+  if (!API_MODE) { init(); return; }
+  $('ver').textContent = '連線中…';
+  call('publicInfo').then(function (b) { BOOT = b; init(); })
+    .catch(function (m) { $('ver').textContent = ''; showErr('lErr', '無法連線到現場系統：' + m); });
+}
+function init() {
+  $('title').textContent = (BOOT.community || '') + ' 現場系統';
+  $('ver').textContent = '版本 ' + BOOT.version + '　案件 ' + BOOT.code;
+  var m = ''; for (var i = 1; i <= 12; i++) m += '<option value="' + i + '號機">' + i + ' 號機</option>';
+  $('lMachine').innerHTML = m;
+  $('lStaff').innerHTML = BOOT.staff.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + '（' + esc(s.role) + '）</option>'; }).join('');
+  $('manualTopic').innerHTML = '<option value="">（請選擇）</option>' + BOOT.topics.map(function (t) { return '<option value="' + t.no + '">議題 ' + esc(t.label || t.no) + '　' + esc(t.title) + '</option>'; }).join('');
+  try { var saved = JSON.parse(sessionStorage.getItem('av_auth') || 'null'); if (saved) { AUTH = saved.auth; ME = saved.me; enter(); } } catch (e) {}
+  $('code').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var v = $('code').value.trim(); $('code').value = ''; if (v) handle(v, true); } });
+}
+boot();
+
+function doLogin() {
+  var a = { machine: $('lMachine').value, staffId: $('lStaff').value, pin: $('lPin').value.trim() };
+  showErr('lErr', '');
+  call('login', a).then(function (me) {
+    AUTH = a; ME = me;
+    try { sessionStorage.setItem('av_auth', JSON.stringify({ auth: a, me: me })); } catch (e) {}
+    enter();
+  }).catch(function (m) { showErr('lErr', m); });
+}
+function logout() {
+  stopCam();
+  AUTH = null; ME = null;
+  try { sessionStorage.removeItem('av_auth'); } catch (e) {}
+  $('lPin').value = ''; $('vMain').classList.add('hidden'); $('vLogin').classList.remove('hidden');
+}
+function enter() {
+  $('vLogin').classList.add('hidden'); $('vMain').classList.remove('hidden');
+  $('who').textContent = ME.machine + '・' + ME.name + '（' + ME.role + '）';
+  var modes = ME.role === '監票' ? ['報到', '唱票', '管理'] : [ME.role];
+  $('tabs').innerHTML = modes.map(function (m) { return '<button onclick="setMode(\'' + m + '\')" id="tab_' + m + '">' + m + '</button>'; }).join('');
+  setMode(modes[0] === '報到' && ME.role === '監票' ? '唱票' : modes[0]);
+}
+function setMode(m) {
+  MODE = m; clearPanel();
+  document.querySelectorAll('.tabs button').forEach(function (b) { b.classList.toggle('on', b.id === 'tab_' + m); });
+  $('scanBox').classList.toggle('hidden', m === '管理');
+  $('admin').classList.toggle('hidden', m !== '管理');
+  $('manualTopicBox').classList.toggle('hidden', m !== '唱票');
+  if (m === '管理') loadAdmin();
+}
+
+/* ---------- 相機 ---------- */
+function toggleCam() { if (CAM) stopCam(); else startCam(); }
+function startCam() {
+  if (typeof Html5Qrcode === 'undefined') { showErr('scanErr', '相機元件載入失敗，請改用掃描槍或手動輸入'); return; }
+  CAM = new Html5Qrcode('reader');
+  CAM.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, function (text) { handle(text, false); })
+    .then(function () { $('camBtn').textContent = '關閉相機'; showErr('scanErr', ''); })
+    .catch(function (e) {
+      CAM = null;
+      showErr('scanErr', API_MODE ? '無法開啟相機，請確認已允許相機權限；也可以按「拍照掃描」或手動輸入'
+                                  : 'Google 網址不能使用即時相機：請改用 GitHub 掃描網址，或按「拍照掃描」、手動輸入');
+    });
+}
+// 拍照掃描：開手機相機拍一張，從照片讀 QR（任何瀏覽器都能用）
+function photoScan(inp) {
+  var f = inp.files && inp.files[0];
+  inp.value = '';
+  if (!f) return;
+  if (typeof Html5Qrcode === 'undefined') { showErr('scanErr', '掃描元件載入失敗，請改用手動輸入'); return; }
+  showErr('scanErr', '');
+  new Html5Qrcode('photoReader').scanFile(f, false)
+    .then(function (text) { LAST = { t: '', at: 0 }; handle(text, false); })
+    .catch(function () { showErr('scanErr', '照片裡找不到 QR，請靠近一點、對準 QR 再拍一次'); });
+}
+function stopCam() {
+  if (!CAM) return;
+  var c = CAM; CAM = null;
+  c.stop().then(function () { c.clear(); }).catch(function () {});
+  $('camBtn').textContent = '開啟相機';
+}
+
+/* ---------- 掃描分派 ---------- */
+function handle(text, manual) {
+  if (BUSY) return;
+  var now = Date.now();
+  if (!manual && text === LAST.t && now - LAST.at < 4000) return;
+  LAST = { t: text, at: now };
+  BUSY = true; showErr('scanErr', '');
+  $('panel').innerHTML = '<div class="card muted">查詢中…</div>';
+  if (MODE === '報到') checkinLookup(text);
+  else voteLookup(text, manual ? $('manualTopic').value : '');
+}
+// 關閉面板後 4 秒內，相機看到同一張票不會再觸發（避免票還在鏡頭前被重掃）
+function clearPanel() { if (UNDO_TIMER) { clearInterval(UNDO_TIMER); UNDO_TIMER = null; } $('panel').innerHTML = ''; BUSY = false; LAST.at = Date.now(); $('code').focus(); }
+function fail(m) { $('panel').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div><button onclick="clearPanel()">繼續掃描</button></div>'; }
+
+/* ---------- 報到 ---------- */
+var CK = null;
+function checkinLookup(text) {
+  call('lookupCheckin', AUTH, text).then(function (r) {
+    CK = r;
+    var prev = r.previous.length ? '<div class="warn">⚠ 已報到過：' + r.previous.map(function (p) { return esc(p.time + ' ' + p.mode + (p.proxy ? '（' + p.proxy + '）' : '') + ' ' + p.machine); }).join('；') + '</div>' : '';
+    $('panel').innerHTML = '<div class="card"><div class="big">' + esc(r.unit) + '</div><div style="font-size:20px">' + esc(r.name) + '</div>' +
+      '<div class="muted">區分所有權比例 ' + (r.ratio * 100).toFixed(4) + '%</div>' + prev +
+      '<button class="ok" onclick="ckSubmit(\'本人\')">本人報到</button>' +
+      '<button class="pri" onclick="ckProxyForm()">委託報到（授權書）</button><div id="ckForm"></div>' +
+      '<button onclick="clearPanel()">取消</button></div>';
+  }).catch(fail);
+}
+function ckProxyForm() {
+  $('ckForm').innerHTML = '<label>受託人姓名</label><input id="pName">' +
+    '<label>受託人身分</label><select id="pType"><option value="">（可會後補登）</option><option>配偶</option><option>直系血親</option><option>其他區權人</option><option>承租人</option><option>其他</option></select>' +
+    '<label>授權書編號</label><input id="pNo" inputmode="numeric">' +
+    '<button class="ok" onclick="ckSubmit(\'委託\')">確認委託報到</button>';
+  $('pName').focus();
+}
+function ckSubmit(mode) {
+  var pn = mode === '委託' ? $('pName').value : '', pt = mode === '委託' ? $('pType').value : '', no = mode === '委託' ? $('pNo').value : '';
+  call('doCheckin', AUTH, CK.unit, mode, pn, pt, no, '').then(function (r) {
+    $('panel').innerHTML = '<div class="card"><div class="done"><div class="big">' + esc(CK.unit) + ' ✓</div>' + esc(mode) + '報到完成' + (r.status === '重複' ? '（重複，只計一次）' : '') + '</div>' +
+      warnHtml(r.warnings) + '<button class="pri" onclick="clearPanel()">下一位</button></div>';
+    if (!r.warnings.length) setTimeout(function () { if (BUSY) clearPanel(); }, 2500);
+  }).catch(fail);
+}
+
+/* ---------- 唱票 ---------- */
+var CUR = null;
+function voteLookup(text, manualTopic) {
+  call('scanVote', AUTH, text, manualTopic).then(function (r) {
+    CUR = r;
+    var head = band(r.topic) + '<div class="big">' + esc(r.unit) + '</div><div class="muted">' + esc(r.masked) + '</div>' + warnHtml(r.warnings);
+    if (r.state === 'locked') { $('panel').innerHTML = '<div class="card">' + head + '<div class="err">此議題已宣布結果，需由監票人員處理</div><button onclick="clearPanel()">繼續掃描</button></div>'; return; }
+    if (r.state === 'exists') {
+      var rec = r.record;
+      $('panel').innerHTML = '<div class="card">' + head + '<div class="warn">這張已登錄為「<b>' + esc(rec.result) + '</b>」<br>' + esc(rec.time + '　' + rec.machine + '　' + rec.staff) + '</div>' +
+        '<button class="pri" onclick="clearPanel()">維持原結果</button>' + correctButtons(r.topic, rec) + '</div>';
+      return;
+    }
+    $('panel').innerHTML = '<div class="card">' + head + voteButtons(r.topic) + '<button onclick="clearPanel()">取消</button></div>';
+    if (r.topic.kind === '選舉') $('cand').focus();
+  }).catch(fail);
+}
+function optionButtons(t, fn, exclude) {
+  return (t.options || []).filter(function (o) { return o.label !== exclude; }).map(function (o, i) {
+    return '<button class="' + (fn === 'submit' ? (i % 2 ? 'no' : 'ok') : 'gray') + '" onclick="' + fn + '(\'' + o.label + '\')">' +
+      (fn === 'correct' ? '更正為「' + esc(o.label) + '」' : esc(o.label)) + (o.desc ? '<br><span style="font-size:15px;font-weight:400">' + esc(o.desc) + '</span>' : '') + '</button>';
+  }).join('');
+}
+function voteButtons(t) {
+  if (t.kind === '方案') return optionButtons(t, 'submit') + '<button class="gray" onclick="submit(\'廢票\')">廢票</button>';
+  if (t.kind === '表決') return '<div class="row"><button class="ok" onclick="submit(\'同意\')">同意</button><button class="no" onclick="submit(\'不同意\')">不同意</button></div><button class="gray" onclick="submit(\'廢票\')">廢票</button>';
+  return '<label>票上所寫的候選人戶號</label><input id="cand" autocomplete="off" placeholder="例：B1-07F"><button class="ok" onclick="submit($(\'cand\').value)">確認</button><button class="gray" onclick="submit(\'廢票\')">廢票</button>';
+}
+function correctButtons(t, rec) {
+  if (t.kind === '方案') return optionButtons(t, 'correct', rec.result) + (rec.result !== '廢票' ? '<button class="gray" onclick="correct(\'廢票\')">更正為「廢票」</button>' : '');
+  if (t.kind === '表決') return ['同意', '不同意', '廢票'].filter(function (x) { return x !== rec.result; })
+    .map(function (x) { return '<button class="gray" onclick="correct(\'' + x + '\')">更正為「' + x + '」</button>'; }).join('');
+  return '<label>更正為候選人戶號</label><input id="cand2" autocomplete="off"><button class="gray" onclick="correct($(\'cand2\').value)">更正</button><button class="gray" onclick="correct(\'廢票\')">更正為廢票</button>';
+}
+function submit(result) {
+  if (!String(result || '').trim()) { alert('請輸入候選人戶號，或按廢票'); return; }
+  var r = CUR;
+  call('submitVote', AUTH, r.unit, r.topic.no, result).then(function (x) {
+    if (x.state === 'exists') { CUR.state = 'exists'; CUR.record = x.record; voteLookupRender(); return; }
+    var sec = 5;
+    $('panel').innerHTML = '<div class="card">' + band(r.topic) + '<div class="done"><div class="big">' + esc(r.unit) + ' → ' + esc(x.result) + ' ✓</div>' +
+      (x.note ? '<div class="warn">' + esc(x.note) + '</div>' : '') + '</div>' +
+      '<button id="undoBtn" class="gray" onclick="undo(\'' + x.id + '\')">復原（5）</button></div>';
+    UNDO_TIMER = setInterval(function () {
+      sec--;
+      if (sec <= 0) { clearPanel(); return; }
+      var b = $('undoBtn'); if (b) b.textContent = '復原（' + sec + '）';
+    }, 1000);
+  }).catch(fail);
+}
+function voteLookupRender() {
+  var r = CUR, rec = r.record;
+  $('panel').innerHTML = '<div class="card">' + band(r.topic) + '<div class="big">' + esc(r.unit) + '</div><div class="warn">另一台手機已登錄為「<b>' + esc(rec.result) + '</b>」<br>' +
+    esc(rec.time + '　' + rec.machine + '　' + rec.staff) + '</div><button class="pri" onclick="clearPanel()">維持原結果</button>' + correctButtons(r.topic, rec) + '</div>';
+}
+function undo(id) {
+  if (UNDO_TIMER) { clearInterval(UNDO_TIMER); UNDO_TIMER = null; }
+  call('undoVote', AUTH, id).then(function () {
+    CUR.state = 'new';
+    $('panel').innerHTML = '<div class="card">' + band(CUR.topic) + '<div class="big">' + esc(CUR.unit) + '</div><div class="muted">已復原，請重新選擇</div>' + voteButtons(CUR.topic) + '<button onclick="clearPanel()">取消</button></div>';
+  }).catch(fail);
+}
+function correct(newResult) {
+  if (!String(newResult || '').trim()) { alert('請輸入更正後的內容'); return; }
+  if (!confirm('確定將 ' + CUR.unit + ' 由「' + CUR.record.result + '」更正為「' + newResult + '」？\n系統會保留更正紀錄。')) return;
+  call('correctVote', AUTH, CUR.record.id, newResult).then(function (x) {
+    $('panel').innerHTML = '<div class="card"><div class="done"><div class="big">' + esc(CUR.unit) + ' → ' + esc(x.result || newResult) + ' ✓</div>' + (x.unchanged ? '結果相同，未變更' : '已更正並留下紀錄') + '</div><button class="pri" onclick="clearPanel()">繼續掃描</button></div>';
+  }).catch(fail);
+}
+
+/* ---------- 管理（監票） ---------- */
+function loadAdmin() {
+  $('admin').innerHTML = '<div class="card muted">載入中…</div>';
+  call('adminTopics', AUTH).then(function (ts) {
+    var url = BOOT.url ? '<p class="muted">投影畫面網址：<br>' + esc(BOOT.url) + '?page=display</p>' : '';
+    $('admin').innerHTML = '<div class="card"><h1>議題狀態</h1><table><tr><th>議題</th><th>狀態</th><th>已唱</th><th></th></tr>' +
+      ts.map(function (t) {
+        var btn = t.status === '已宣布' ? '<button class="gray" style="margin:0;padding:6px;font-size:14px" onclick="setStatus(' + t.no + ',\'統計中\')">重新開啟</button>'
+                                        : '<button class="pri" style="margin:0;padding:6px;font-size:14px" onclick="setStatus(' + t.no + ',\'已宣布\')">宣布結果</button>';
+        var res = '';
+        if (t.kind === '表決' && t.scanned) res = '<br><span class="muted">同意 ' + t['同意'].votes + '／不同意 ' + t['不同意'].votes + '　' + (t.pass ? '通過' : '未通過') + '</span>';
+        if (t.kind === '方案' && t.scanned) res = '<br><span class="muted">' + t.options.map(function (o) { return esc(o.label) + ' ' + o.votes; }).join('／') + '　' + (t.tie ? '同票' : t.winner ? esc(t.winner) + '較高' : '') + '</span>';
+        return '<tr><td>' + esc(t.label || t.no) + '. ' + esc(t.title) + res + '</td><td>' + esc(t.status) + '</td><td>' + t.scanned + '/' + t.expected + '</td><td>' + btn + '</td></tr>';
+      }).join('') + '</table><button onclick="loadAdmin()">重新整理</button>' + url + '</div>';
+  }).catch(function (m) { $('admin').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div></div>'; });
+}
+function setStatus(no, st) {
+  if (!confirm((st === '已宣布' ? '宣布議題 ' : '重新開啟議題 ') + no + '？' + (st === '已宣布' ? '\n宣布後，唱票人員將無法再更正此題。' : ''))) return;
+  call('setTopicStatus', AUTH, no, st).then(loadAdmin).catch(function (m) { alert(m); });
+}
+</script>
+</body>
+</html>
