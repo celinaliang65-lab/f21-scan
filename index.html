@@ -4,6 +4,8 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.5.2：一人可有多個角色（例：報到、唱票），登入後兩個分頁都有
+     v0.5.1：用相機掃描後不再自動跳到輸入框（手機不會跳出鍵盤）
      v0.5.0：掃描更靈敏＋掃到時嗶聲／震動／綠框並暫停相機；所有人員新增「進度」分頁
      v0.4.0：新增外部網址模式、「拍照掃描」按鈕；v0.3.0：方案類按鈕、議題顯示編號 -->
 <html>
@@ -100,6 +102,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
+var PAGE_VERSION = 'v0.5.2';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -149,7 +152,7 @@ function boot() {
 }
 function init() {
   $('title').textContent = (BOOT.community || '') + ' 現場系統';
-  $('ver').textContent = '版本 ' + BOOT.version + '　案件 ' + BOOT.code;
+  $('ver').textContent = '畫面 ' + PAGE_VERSION + '｜系統 ' + BOOT.version + '　案件 ' + BOOT.code;
   var m = ''; for (var i = 1; i <= 12; i++) m += '<option value="' + i + '號機">' + i + ' 號機</option>';
   $('lMachine').innerHTML = m;
   $('lStaff').innerHTML = BOOT.staff.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + '（' + esc(s.role) + '）</option>'; }).join('');
@@ -177,9 +180,10 @@ function logout() {
 function enter() {
   $('vLogin').classList.add('hidden'); $('vMain').classList.remove('hidden');
   $('who').textContent = ME.machine + '・' + ME.name + '（' + ME.role + '）';
-  var modes = ME.role === '監票' ? ['報到', '唱票', '管理', '進度'] : [ME.role, '進度'];
+  var rs = ME.roles || String(ME.role).split(/[、,，\/／+＋\s]+/);
+  var modes = rs.indexOf('監票') >= 0 ? ['報到', '唱票', '管理', '進度'] : ['報到', '唱票'].filter(function (m) { return rs.indexOf(m) >= 0; }).concat(['進度']);
   $('tabs').innerHTML = modes.map(function (m) { return '<button onclick="setMode(\'' + m + '\')" id="tab_' + m + '">' + m + '</button>'; }).join('');
-  setMode(modes[0] === '報到' && ME.role === '監票' ? '唱票' : modes[0]);
+  setMode(rs.indexOf('監票') >= 0 ? '唱票' : modes[0]);
 }
 var PG_TIMER = null;
 function setMode(m) {
@@ -200,6 +204,8 @@ function toggleCam() { if (CAM) stopCam(); else startCam(); }
 function startCam() {
   if (typeof Html5Qrcode === 'undefined') { showErr('scanErr', '相機元件載入失敗，請改用掃描槍或手動輸入'); return; }
   unlockBeep();
+  try { $('code').blur(); } catch (e) {}
+  LAST_MANUAL = false;
   var fmt = (typeof Html5QrcodeSupportedFormats !== 'undefined') ? [Html5QrcodeSupportedFormats.QR_CODE] : undefined;
   CAM = new Html5Qrcode('reader', { formatsToSupport: fmt, experimentalFeatures: { useBarCodeDetectorIfSupported: true }, verbose: false });
   CAM.start({ facingMode: 'environment' }, {
@@ -253,6 +259,8 @@ function handle(text, manual) {
   if (!manual && text === LAST.t && now - LAST.at < 4000) return;
   LAST = { t: text, at: now };
   BUSY = true; showErr('scanErr', '');
+  LAST_MANUAL = !!manual;
+  if (!manual) { try { $('code').blur(); } catch (e) {} }
   if (!manual) { beep(true); $('reader').classList.add('hit'); camPause(); }
   var shown = (String(text).split('|')[1] || text).trim();
   $('panel').innerHTML = '<div class="card"><div class="reading">已讀到 ' + esc(shown) + '<br><span style="font-size:15px;font-weight:400">查詢中…</span></div></div>';
@@ -260,7 +268,9 @@ function handle(text, manual) {
   else voteLookup(text, manual ? $('manualTopic').value : '');
 }
 // 關閉面板後 4 秒內，相機看到同一張票不會再觸發（避免票還在鏡頭前被重掃）
-function clearPanel() { if (UNDO_TIMER) { clearInterval(UNDO_TIMER); UNDO_TIMER = null; } $('panel').innerHTML = ''; BUSY = false; LAST.at = Date.now(); camResume(); if (!CAM) $('code').focus(); }
+// 只有上一筆是「掃描槍／手動輸入」才把游標放回輸入框；用相機掃時不碰輸入框（避免手機跳出鍵盤）
+var LAST_MANUAL = false;
+function clearPanel() { if (UNDO_TIMER) { clearInterval(UNDO_TIMER); UNDO_TIMER = null; } $('panel').innerHTML = ''; BUSY = false; LAST.at = Date.now(); camResume(); if (LAST_MANUAL && !CAM) $('code').focus(); }
 function fail(m) { beep(false); $('panel').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div><button onclick="clearPanel()">繼續掃描</button></div>'; }
 
 /* ---------- 報到 ---------- */
