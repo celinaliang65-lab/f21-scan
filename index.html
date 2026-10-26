@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.7.0：報到可模糊查詢住戶（戶別、樓層、地址、姓名），點選直接帶出；報到畫面顯示地址
      v0.6.0：送出時附上「掃到→送出」秒數（會後分析用）；報到畫面姓名與比例同一列、字放大
      v0.5.2：一人可有多個角色（例：報到、唱票），登入後兩個分頁都有
      v0.5.1：用相機掃描後不再自動跳到輸入框（手機不會跳出鍵盤）
@@ -41,6 +42,10 @@
   #reader.hit { border-color:#1D9E75; }
   .who-row { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin:4px 0 6px; flex-wrap:wrap; }
   .who-name { font-size:24px; font-weight:700; } .who-ratio { font-size:19px; color:var(--txt); }
+  #suggest .sg { display:block; width:100%; text-align:left; margin:6px 0 0; padding:10px 12px; font-size:16px; border-radius:10px; }
+  #suggest .sg b { font-size:19px; margin-right:8px; } #suggest .sg small { display:block; color:var(--sub); font-size:14px; margin-top:2px; }
+  #suggest .sg .ck { float:right; font-size:13px; font-weight:700; color:var(--green); background:#E1F5EE; border-radius:6px; padding:1px 7px; }
+  #suggest .more { font-size:14px; color:var(--sub); margin-top:6px; }
   .reading { background:#E1F5EE; color:var(--green); border-radius:10px; padding:16px; text-align:center; font-size:22px; font-weight:700; }
   .tip { font-size:14px; color:var(--sub); margin-top:6px; }
   .pg-att { font-size:17px; line-height:1.7; } .pg-att b { font-size:24px; }
@@ -85,8 +90,9 @@
       <input id="photo" type="file" accept="image/*" capture="environment" class="hidden" onchange="photoScan(this)">
       <div id="photoReader" class="hidden"></div>
       <div class="tip" id="camTip">掃描訣竅：選票離鏡頭約 15～25 公分，讓 QR 填滿框框的一半以上；光線不足時打開燈光。掃到時會「嗶」一聲、框變綠色。</div>
-      <label>掃描槍或手動輸入（輸入完按 Enter）</label>
+      <label id="codeLabel">掃描槍或手動輸入（輸入完按 Enter）</label>
       <input id="code" autocomplete="off" placeholder="例：B1-02F">
+      <div id="suggest"></div>
       <div id="manualTopicBox">
         <label>手動輸入戶別時，請選議題</label>
         <select id="manualTopic"></select>
@@ -105,7 +111,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.6.0';
+var PAGE_VERSION = 'v0.7.0';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -161,7 +167,20 @@ function init() {
   $('lStaff').innerHTML = BOOT.staff.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + '（' + esc(s.role) + '）</option>'; }).join('');
   $('manualTopic').innerHTML = '<option value="">（請選擇）</option>' + BOOT.topics.map(function (t) { return '<option value="' + t.no + '">議題 ' + esc(t.label || t.no) + '　' + esc(t.title) + '</option>'; }).join('');
   try { var saved = JSON.parse(sessionStorage.getItem('av_auth') || 'null'); if (saved) { AUTH = saved.auth; ME = saved.me; enter(); } } catch (e) {}
-  $('code').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var v = $('code').value.trim(); $('code').value = ''; if (v) handle(v, true); } });
+  $('code').addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    var v = $('code').value.trim();
+    if (MODE === '報到' && SG.length === 1 && v.indexOf('|') < 0) v = SG[0].unit;   // 查詢只有一筆：按 Enter 直接帶出
+    $('code').value = ''; $('suggest').innerHTML = ''; SG = [];
+    if (v) handle(v, true);
+  });
+  $('code').addEventListener('input', function () {
+    if (MODE !== '報到') return;
+    clearTimeout(SG_T);
+    var v = $('code').value.trim();
+    if (!v || v.indexOf('|') >= 0) { $('suggest').innerHTML = ''; SG = []; return; }
+    SG_T = setTimeout(function () { searchUnits(v); }, 350);
+  });
 }
 boot();
 
@@ -198,6 +217,9 @@ function setMode(m) {
   $('admin').classList.toggle('hidden', m !== '管理');
   $('progress').classList.toggle('hidden', m !== '進度');
   $('manualTopicBox').classList.toggle('hidden', m !== '唱票');
+  $('codeLabel').textContent = m === '報到' ? '查詢住戶：戶別、樓層、地址或姓名（例：15樓、B17 9F、牛埔東路15之3）' : '掃描槍或手動輸入（輸入完按 Enter）';
+  $('code').placeholder = m === '報到' ? '例：15樓' : '例：B1-02F';
+  $('suggest').innerHTML = '';
   if (m === '管理') loadAdmin();
   if (m === '進度') { loadProgress(); PG_TIMER = setInterval(loadProgress, 10000); }
 }
@@ -278,6 +300,28 @@ function secs() { return SCAN_AT ? Math.round((Date.now() - SCAN_AT) / 100) / 10
 function clearPanel() { if (UNDO_TIMER) { clearInterval(UNDO_TIMER); UNDO_TIMER = null; } $('panel').innerHTML = ''; BUSY = false; LAST.at = Date.now(); camResume(); if (LAST_MANUAL && !CAM) $('code').focus(); }
 function fail(m) { beep(false); $('panel').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div><button onclick="clearPanel()">繼續掃描</button></div>'; }
 
+/* ---------- 報到：模糊查詢 ---------- */
+var SG = [], SG_T = null, SG_Q = '';
+function searchUnits(v) {
+  SG_Q = v;
+  $('suggest').innerHTML = '<div class="more">查詢中…</div>';
+  call('searchRoster', AUTH, v).then(function (r) {
+    if (SG_Q !== v || $('code').value.trim() !== v) return;          // 已經改打別的字，略過舊結果
+    SG = r.items;
+    if (!r.items.length) { $('suggest').innerHTML = '<div class="more">找不到符合「' + esc(v) + '」的住戶</div>'; return; }
+    $('suggest').innerHTML = r.items.map(function (h, i) {
+      return '<button class="sg gray" onclick="pickUnit(' + i + ')">' + (h.checked ? '<span class="ck">已報到</span>' : '') +
+        '<b>' + esc(h.unit) + '</b>' + esc(h.name) + '<small>' + esc(h.address || '') + '　比例 ' + (h.ratio * 100).toFixed(2) + '%</small></button>';
+    }).join('') + (r.total > r.items.length ? '<div class="more">共 ' + r.total + ' 戶，只列前 ' + r.items.length + ' 戶，請多打幾個字縮小範圍</div>' : '');
+  }).catch(function (m) { $('suggest').innerHTML = '<div class="more">' + esc(m) + '</div>'; });
+}
+function pickUnit(i) {
+  var h = SG[i]; if (!h) return;
+  $('code').value = ''; $('suggest').innerHTML = ''; SG = [];
+  try { $('code').blur(); } catch (e) {}
+  handle(h.unit, true);
+}
+
 /* ---------- 報到 ---------- */
 var CK = null;
 function checkinLookup(text) {
@@ -285,7 +329,8 @@ function checkinLookup(text) {
     CK = r;
     var prev = r.previous.length ? '<div class="warn">⚠ 已報到過：' + r.previous.map(function (p) { return esc(p.time + ' ' + p.mode + (p.proxy ? '（' + p.proxy + '）' : '') + ' ' + p.machine); }).join('；') + '</div>' : '';
     $('panel').innerHTML = '<div class="card"><div class="big">' + esc(r.unit) + '</div>' +
-      '<div class="who-row"><span class="who-name">' + esc(r.name) + '</span><span class="who-ratio">比例 ' + (Math.round(r.ratio * 1000000) / 10000) + '%</span></div>' + prev +
+      '<div class="who-row"><span class="who-name">' + esc(r.name) + '</span><span class="who-ratio">比例 ' + (r.ratio * 100).toFixed(2) + '%</span></div>' +
+      (r.address ? '<div class="muted" style="font-size:16px;margin-bottom:6px">' + esc(r.address) + '</div>' : '') + prev +
       '<button class="ok" onclick="ckSubmit(\'本人\')">本人報到</button>' +
       '<button class="pri" onclick="ckProxyForm()">委託報到（授權書）</button><div id="ckForm"></div>' +
       '<button onclick="clearPanel()">取消</button></div>';
