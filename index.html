@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.5.0：掃描更靈敏＋掃到時嗶聲／震動／綠框並暫停相機；所有人員新增「進度」分頁
      v0.4.0：新增外部網址模式、「拍照掃描」按鈕；v0.3.0：方案類按鈕、議題顯示編號 -->
 <html>
 <head>
@@ -33,7 +34,17 @@
   .err { background:#FCEBEB; color:var(--red); border-radius:8px; padding:8px 10px; margin:8px 0; font-size:15px; }
   .done { background:#E1F5EE; color:var(--green); border-radius:10px; padding:16px; text-align:center; }
   .muted { color:var(--sub); font-size:14px; }
-  #reader { width:100%; border-radius:10px; overflow:hidden; }
+  #reader { width:100%; border-radius:10px; overflow:hidden; border:4px solid transparent; transition:border-color .15s; }
+  #reader.hit { border-color:#1D9E75; }
+  .reading { background:#E1F5EE; color:var(--green); border-radius:10px; padding:16px; text-align:center; font-size:22px; font-weight:700; }
+  .tip { font-size:14px; color:var(--sub); margin-top:6px; }
+  .pg-att { font-size:17px; line-height:1.7; } .pg-att b { font-size:24px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:6px; font-size:13px; font-weight:600; white-space:nowrap; flex-shrink:0; }
+  .p-wait { background:#F1EFE8; color:#5F5E5A; } .p-run { background:#E6F1FB; color:#185FA5; } .p-done { background:#E1F5EE; color:#0F6E56; } .p-ng { background:#FCEBEB; color:#A32D2D; }
+  .pg-t { border-top:1px solid var(--line); padding:10px 0; } .pg-t:first-child { border-top:0; }
+  .pg-h { display:flex; justify-content:space-between; gap:8px; align-items:flex-start; font-size:16px; font-weight:600; }
+  .pg-bar { height:8px; background:#eef0f3; border-radius:5px; margin:6px 0; } .pg-bar div { height:8px; border-radius:5px; background:#378ADD; }
+  .pg-r { font-size:15px; color:var(--txt); }
   .hidden { display:none; }
   table { width:100%; border-collapse:collapse; font-size:14px; } td, th { border-bottom:1px solid var(--line); padding:6px 4px; text-align:left; }
 </style>
@@ -68,6 +79,7 @@
       </div>
       <input id="photo" type="file" accept="image/*" capture="environment" class="hidden" onchange="photoScan(this)">
       <div id="photoReader" class="hidden"></div>
+      <div class="tip" id="camTip">掃描訣竅：選票離鏡頭約 15～25 公分，讓 QR 填滿框框的一半以上；光線不足時打開燈光。掃到時會「嗶」一聲、框變綠色。</div>
       <label>掃描槍或手動輸入（輸入完按 Enter）</label>
       <input id="code" autocomplete="off" placeholder="例：B1-02F">
       <div id="manualTopicBox">
@@ -79,6 +91,7 @@
 
     <div id="panel"></div>
     <div id="admin" class="hidden"></div>
+    <div id="progress" class="hidden"></div>
   </div>
 </div>
 
@@ -164,25 +177,36 @@ function logout() {
 function enter() {
   $('vLogin').classList.add('hidden'); $('vMain').classList.remove('hidden');
   $('who').textContent = ME.machine + '・' + ME.name + '（' + ME.role + '）';
-  var modes = ME.role === '監票' ? ['報到', '唱票', '管理'] : [ME.role];
+  var modes = ME.role === '監票' ? ['報到', '唱票', '管理', '進度'] : [ME.role, '進度'];
   $('tabs').innerHTML = modes.map(function (m) { return '<button onclick="setMode(\'' + m + '\')" id="tab_' + m + '">' + m + '</button>'; }).join('');
   setMode(modes[0] === '報到' && ME.role === '監票' ? '唱票' : modes[0]);
 }
+var PG_TIMER = null;
 function setMode(m) {
   MODE = m; clearPanel();
+  if (PG_TIMER) { clearInterval(PG_TIMER); PG_TIMER = null; }
+  if (m === '管理' || m === '進度') stopCam();
   document.querySelectorAll('.tabs button').forEach(function (b) { b.classList.toggle('on', b.id === 'tab_' + m); });
-  $('scanBox').classList.toggle('hidden', m === '管理');
+  $('scanBox').classList.toggle('hidden', m === '管理' || m === '進度');
   $('admin').classList.toggle('hidden', m !== '管理');
+  $('progress').classList.toggle('hidden', m !== '進度');
   $('manualTopicBox').classList.toggle('hidden', m !== '唱票');
   if (m === '管理') loadAdmin();
+  if (m === '進度') { loadProgress(); PG_TIMER = setInterval(loadProgress, 10000); }
 }
 
 /* ---------- 相機 ---------- */
 function toggleCam() { if (CAM) stopCam(); else startCam(); }
 function startCam() {
   if (typeof Html5Qrcode === 'undefined') { showErr('scanErr', '相機元件載入失敗，請改用掃描槍或手動輸入'); return; }
-  CAM = new Html5Qrcode('reader');
-  CAM.start({ facingMode: 'environment' }, { fps: 10, qrbox: 220 }, function (text) { handle(text, false); })
+  unlockBeep();
+  var fmt = (typeof Html5QrcodeSupportedFormats !== 'undefined') ? [Html5QrcodeSupportedFormats.QR_CODE] : undefined;
+  CAM = new Html5Qrcode('reader', { formatsToSupport: fmt, experimentalFeatures: { useBarCodeDetectorIfSupported: true }, verbose: false });
+  CAM.start({ facingMode: 'environment' }, {
+      fps: 20,
+      qrbox: function (w, h) { var s = Math.floor(Math.min(w, h) * 0.8); return { width: s, height: s }; },
+      videoConstraints: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+    }, function (text) { handle(text, false); })
     .then(function () { $('camBtn').textContent = '關閉相機'; showErr('scanErr', ''); })
     .catch(function (e) {
       CAM = null;
@@ -201,6 +225,20 @@ function photoScan(inp) {
     .then(function (text) { LAST = { t: '', at: 0 }; handle(text, false); })
     .catch(function () { showErr('scanErr', '照片裡找不到 QR，請靠近一點、對準 QR 再拍一次'); });
 }
+// 掃到時的提示：嗶聲＋震動（Android）＋綠框
+var AC = null;
+function unlockBeep() { try { if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)(); if (AC.state === 'suspended') AC.resume(); } catch (e) {} }
+function beep(ok) {
+  try {
+    if (!AC) return;
+    var o = AC.createOscillator(), g = AC.createGain();
+    o.frequency.value = ok ? 1320 : 330; g.gain.value = 0.25;
+    o.connect(g); g.connect(AC.destination); o.start(); o.stop(AC.currentTime + (ok ? 0.12 : 0.3));
+  } catch (e) {}
+  try { if (navigator.vibrate) navigator.vibrate(ok ? 80 : [60, 60, 60]); } catch (e) {}
+}
+function camPause() { try { if (CAM && CAM.getState && CAM.getState() === 2) CAM.pause(true); } catch (e) {} }
+function camResume() { try { if (CAM && CAM.getState && CAM.getState() === 3) CAM.resume(); } catch (e) {} $('reader').classList.remove('hit'); }
 function stopCam() {
   if (!CAM) return;
   var c = CAM; CAM = null;
@@ -215,13 +253,15 @@ function handle(text, manual) {
   if (!manual && text === LAST.t && now - LAST.at < 4000) return;
   LAST = { t: text, at: now };
   BUSY = true; showErr('scanErr', '');
-  $('panel').innerHTML = '<div class="card muted">查詢中…</div>';
+  if (!manual) { beep(true); $('reader').classList.add('hit'); camPause(); }
+  var shown = (String(text).split('|')[1] || text).trim();
+  $('panel').innerHTML = '<div class="card"><div class="reading">已讀到 ' + esc(shown) + '<br><span style="font-size:15px;font-weight:400">查詢中…</span></div></div>';
   if (MODE === '報到') checkinLookup(text);
   else voteLookup(text, manual ? $('manualTopic').value : '');
 }
 // 關閉面板後 4 秒內，相機看到同一張票不會再觸發（避免票還在鏡頭前被重掃）
-function clearPanel() { if (UNDO_TIMER) { clearInterval(UNDO_TIMER); UNDO_TIMER = null; } $('panel').innerHTML = ''; BUSY = false; LAST.at = Date.now(); $('code').focus(); }
-function fail(m) { $('panel').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div><button onclick="clearPanel()">繼續掃描</button></div>'; }
+function clearPanel() { if (UNDO_TIMER) { clearInterval(UNDO_TIMER); UNDO_TIMER = null; } $('panel').innerHTML = ''; BUSY = false; LAST.at = Date.now(); camResume(); if (!CAM) $('code').focus(); }
+function fail(m) { beep(false); $('panel').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div><button onclick="clearPanel()">繼續掃描</button></div>'; }
 
 /* ---------- 報到 ---------- */
 var CK = null;
@@ -320,6 +360,33 @@ function correct(newResult) {
   call('correctVote', AUTH, CUR.record.id, newResult).then(function (x) {
     $('panel').innerHTML = '<div class="card"><div class="done"><div class="big">' + esc(CUR.unit) + ' → ' + esc(x.result || newResult) + ' ✓</div>' + (x.unchanged ? '結果相同，未變更' : '已更正並留下紀錄') + '</div><button class="pri" onclick="clearPanel()">繼續掃描</button></div>';
   }).catch(fail);
+}
+
+/* ---------- 進度（所有人員可看，每 10 秒更新） ---------- */
+function pct(x) { return (Math.round((x || 0) * 1000) / 10).toFixed(1) + '%'; }
+function loadProgress() {
+  if (!$('progress').innerHTML) $('progress').innerHTML = '<div class="card muted">載入中…</div>';
+  call('getDashboard').then(function (d) {
+    var a = d.attendance;
+    var att = '<div class="card pg-att"><h1>出席</h1>出席 <b>' + a.all.units + '</b> 戶　人數 ' + pct(a.all.peoplePct) + '　比例 ' + pct(a.all.ratio) +
+      (a.all.units !== a.legal.units ? '<br><span class="muted">依法可計入 ' + a.legal.units + ' 戶・' + pct(a.legal.ratio) + '</span>' : '') +
+      '<br>' + (a.legal.ok ? '<span class="pill p-done">已達開會門檻</span>' : '<span class="pill p-ng">未達開會門檻（需 ' + pct(a.need) + '）</span>') + '</div>';
+    var done = d.topics.filter(function (t) { return t.status === '已宣布'; }).length;
+    var list = d.topics.map(function (t) {
+      var pill = t.status === '已宣布' ? 'p-done' : t.status === '統計中' ? 'p-run' : 'p-wait';
+      var p = t.expected ? Math.min(100, Math.round(t.scanned / t.expected * 100)) : 0;
+      var res = '';
+      if (t.kind === '表決' && t.scanned) res = '同意 <b>' + t['同意'].votes + '</b>　不同意 <b>' + t['不同意'].votes + '</b>　廢票 ' + t['廢票'].votes +
+        (t.status === '已宣布' ? '　→ <b>' + (t.pass ? '通過' : '未通過') + '</b>' : '');
+      if (t.kind === '方案' && t.scanned) res = t.options.map(function (o) { return esc(o.label) + ' <b>' + o.votes + '</b>'; }).join('　') + '　廢票 ' + t['廢票'].votes +
+        (t.status === '已宣布' ? '　→ <b>' + (t.tie ? '同票' : esc(t.winner) + ' 較高') + '</b>' : '');
+      if (t.kind === '選舉' && t.scanned) res = (t.ranking || []).slice(0, 3).map(function (r) { return esc(r.unit) + ' ' + r.votes; }).join('　');
+      return '<div class="pg-t"><div class="pg-h"><span>議題 ' + esc(t.label || t.no) + '　' + esc(t.title) + '</span><span class="pill ' + pill + '">' + esc(t.status) + '</span></div>' +
+        (t.status === '未開始' && !t.scanned ? '' : '<div class="pg-bar"><div style="width:' + p + '%"></div></div><div class="pg-r">已唱 ' + t.scanned + '／' + t.expected + ' 張' + (res ? '<br>' + res : '') + '</div>') + '</div>';
+    }).join('');
+    $('progress').innerHTML = att + '<div class="card"><h1>議題進度（已宣布 ' + done + '／' + d.topics.length + '）</h1>' + list +
+      '<p class="muted">每 10 秒自動更新　' + esc(d.updated || '') + '</p></div>';
+  }).catch(function (m) { $('progress').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div></div>'; });
 }
 
 /* ---------- 管理（監票） ---------- */
