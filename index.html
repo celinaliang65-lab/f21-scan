@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.8.2：GitHub 網頁自動檢查新版本，出現「有新版本，點這裡更新」
      v0.8.1：序號改淺藍底；查詢清單文字改深色（iPhone 按鈕預設藍字）
      v0.8.0：報到顯示序號（NO.）並可用序號查詢；名冊載入手機即時查詢；前提議題未通過→免表決
      v0.7.0：報到可模糊查詢住戶（戶別、樓層、地址、姓名），點選直接帶出；報到畫面顯示地址
@@ -65,6 +66,7 @@
 </style>
 </head>
 <body>
+<div id="upd" class="hidden" onclick="doUpdate()" style="position:sticky;top:0;z-index:5;background:#185FA5;color:#fff;text-align:center;padding:12px;font-size:17px;font-weight:700;cursor:pointer">有新版本，點這裡更新</div>
 <div class="wrap">
 
   <!-- 登入 -->
@@ -116,7 +118,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.8.1';
+var PAGE_VERSION = 'v0.8.2';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -188,6 +190,17 @@ function init() {
   });
 }
 boot();
+// 外部網址（GitHub）模式：手機常拿到舊的暫存網頁 → 定期檢查是否有新版本，有就顯示「點這裡更新」
+var NEW_VER = '';
+function checkUpdate() {
+  if (!API_MODE || !window.fetch) return;
+  fetch(location.pathname + '?t=' + Date.now(), { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) {
+    var m = t.match(/PAGE_VERSION = '([^']+)'/);
+    if (m && m[1] !== PAGE_VERSION) { NEW_VER = m[1]; $('upd').textContent = '有新版本 ' + m[1] + '，點這裡更新'; $('upd').classList.remove('hidden'); }
+  }).catch(function () {});
+}
+function doUpdate() { location.replace(location.pathname + '?v=' + encodeURIComponent(NEW_VER || Date.now())); }
+setTimeout(checkUpdate, 3000); setInterval(checkUpdate, 5 * 60 * 1000);
 
 function doLogin() {
   var a = { machine: $('lMachine').value, staffId: $('lStaff').value, pin: $('lPin').value.trim() };
