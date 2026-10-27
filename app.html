@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.9.0：監票頁可「取消」議題（投影、進度不顯示，手機不能掃）；新增「會前重置」
      v0.8.3：GitHub 改為「載入器 index.html＋主程式 app.html」，每次開啟都抓最新版，不再被手機暫存擋住
      v0.8.2：GitHub 網頁自動檢查新版本，出現「有新版本，點這裡更新」
      v0.8.1：序號改淺藍底；查詢清單文字改深色（iPhone 按鈕預設藍字）
@@ -119,7 +120,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.8.3';
+var PAGE_VERSION = 'v0.9.0';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -173,7 +174,7 @@ function init() {
   var m = ''; for (var i = 1; i <= 12; i++) m += '<option value="' + i + '號機">' + i + ' 號機</option>';
   $('lMachine').innerHTML = m;
   $('lStaff').innerHTML = BOOT.staff.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + '（' + esc(s.role) + '）</option>'; }).join('');
-  $('manualTopic').innerHTML = '<option value="">（請選擇）</option>' + BOOT.topics.map(function (t) { return '<option value="' + t.no + '">議題 ' + esc(t.label || t.no) + '　' + esc(t.title) + '</option>'; }).join('');
+  $('manualTopic').innerHTML = '<option value="">（請選擇）</option>' + BOOT.topics.filter(function (t) { return t.status !== '取消'; }).map(function (t) { return '<option value="' + t.no + '">議題 ' + esc(t.label || t.no) + '　' + esc(t.title) + '</option>'; }).join('');
   try { var saved = JSON.parse(sessionStorage.getItem('av_auth') || 'null'); if (saved) { AUTH = saved.auth; ME = saved.me; enter(); } } catch (e) {}
   $('code').addEventListener('keydown', function (e) {
     if (e.key !== 'Enter') return;
@@ -419,7 +420,7 @@ function voteLookup(text, manualTopic) {
   call('scanVote', AUTH, text, manualTopic).then(function (r) {
     CUR = r;
     var head = band(r.topic) + '<div class="big">' + esc(r.unit) + '</div><div class="muted">' + esc(r.masked) + '</div>' + warnHtml(r.warnings);
-    if (r.state === 'skipped') { beep(false); $('panel').innerHTML = '<div class="card">' + head + '<div class="err">此議題免表決（' + esc(r.reason || '') + '），不用唱票</div><button onclick="clearPanel()">繼續掃描</button></div>'; return; }
+    if (r.state === 'skipped') { beep(false); $('panel').innerHTML = '<div class="card">' + head + '<div class="err">' + (r.reason === '本題已取消' ? '此議題已取消，不用唱票' : '此議題免表決（' + esc(r.reason || '') + '），不用唱票') + '</div><button onclick="clearPanel()">繼續掃描</button></div>'; return; }
     if (r.state === 'locked') { $('panel').innerHTML = '<div class="card">' + head + '<div class="err">此議題已宣布結果，需由監票人員處理</div><button onclick="clearPanel()">繼續掃描</button></div>'; return; }
     if (r.state === 'exists') {
       var rec = r.record;
@@ -493,8 +494,9 @@ function loadProgress() {
     var att = '<div class="card pg-att"><h1>出席</h1>出席 <b>' + a.all.units + '</b> 戶　人數 ' + pct(a.all.peoplePct) + '　比例 ' + pct(a.all.ratio) +
       (a.all.units !== a.legal.units ? '<br><span class="muted">依法可計入 ' + a.legal.units + ' 戶・' + pct(a.legal.ratio) + '</span>' : '') +
       '<br>' + (a.legal.ok ? '<span class="pill p-done">已達開會門檻</span>' : '<span class="pill p-ng">未達開會門檻（需 ' + pct(a.need) + '）</span>') + '</div>';
-    var done = d.topics.filter(function (t) { return t.status === '已宣布' || t.status === '免表決'; }).length;
-    var list = d.topics.map(function (t) {
+    var tps = d.topics.filter(function (t) { return t.status !== '取消'; });
+    var done = tps.filter(function (t) { return t.status === '已宣布' || t.status === '免表決'; }).length;
+    var list = tps.map(function (t) {
       var pill = t.status === '已宣布' ? 'p-done' : t.status === '統計中' ? 'p-run' : t.status === '免表決' ? 'p-ng' : 'p-wait';
       if (t.status === '免表決') return '<div class="pg-t"><div class="pg-h"><span>議題 ' + esc(t.label || t.no) + '　' + esc(t.title) + '</span><span class="pill p-wait">免表決</span></div><div class="pg-r muted">' + esc(t.skipReason) + '</div></div>';
       var p = t.expected ? Math.min(100, Math.round(t.scanned / t.expected * 100)) : 0;
@@ -507,7 +509,7 @@ function loadProgress() {
       return '<div class="pg-t"><div class="pg-h"><span>議題 ' + esc(t.label || t.no) + '　' + esc(t.title) + '</span><span class="pill ' + pill + '">' + esc(t.status) + '</span></div>' +
         (t.status === '未開始' && !t.scanned ? '' : '<div class="pg-bar"><div style="width:' + p + '%"></div></div><div class="pg-r">已唱 ' + t.scanned + '／' + t.expected + ' 張' + (res ? '<br>' + res : '') + '</div>') + '</div>';
     }).join('');
-    $('progress').innerHTML = att + '<div class="card"><h1>議題進度（已宣布 ' + done + '／' + d.topics.length + '）</h1>' + list +
+    $('progress').innerHTML = att + '<div class="card"><h1>議題進度（已宣布 ' + done + '／' + tps.length + '）</h1>' + list +
       '<p class="muted">每 10 秒自動更新　' + esc(d.updated || '') + '</p></div>';
   }).catch(function (m) { $('progress').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div></div>'; });
 }
@@ -519,20 +521,38 @@ function loadAdmin() {
     var url = BOOT.url ? '<p class="muted">投影畫面網址：<br>' + esc(BOOT.url) + '?page=display</p>' : '';
     $('admin').innerHTML = '<div class="card"><h1>議題狀態</h1><table><tr><th>議題</th><th>狀態</th><th>已唱</th><th></th></tr>' +
       ts.map(function (t) {
+        var sb = 'style="margin:0;padding:6px;font-size:14px"';
+        if (t.status === '取消') return '<tr style="color:#888"><td>' + esc(t.label || t.no) + '. ' + esc(t.title) + '</td><td>已取消</td><td>—</td><td><button class="gray" ' + sb + ' onclick="setStatus(' + t.no + ',\'恢復\')">恢復</button></td></tr>';
         if (t.status === '免表決') return '<tr><td>' + esc(t.label || t.no) + '. ' + esc(t.title) + '<br><span class="muted">' + esc(t.skipReason) + '</span></td><td>免表決</td><td>—</td><td></td></tr>';
+        var cancel = t.status !== '已宣布' && !t.scanned ? '<button style="margin:4px 0 0;padding:4px;font-size:13px;background:none;border:0;color:#6b7280;text-decoration:underline;box-shadow:none" onclick="setStatus(' + t.no + ',\'取消\')">取消此題</button>' : '';
         var btn = t.status === '已宣布' ? '<button class="gray" style="margin:0;padding:6px;font-size:14px" onclick="setStatus(' + t.no + ',\'統計中\')">重新開啟</button>'
                                         : '<button class="pri" style="margin:0;padding:6px;font-size:14px" onclick="setStatus(' + t.no + ',\'已宣布\')">宣布結果</button>';
         var res = '';
         if (t.kind === '表決' && t.scanned) res = '<br><span class="muted">同意 ' + t['同意'].votes + '／不同意 ' + t['不同意'].votes + '　' + (t.pass ? '通過' : '未通過') + '</span>';
         if (t.kind === '方案' && t.scanned) res = '<br><span class="muted">' + t.options.map(function (o) { return esc(o.label) + ' ' + o.votes; }).join('／') + '　' + (t.tie ? '同票' : t.winner ? esc(t.winner) + '較高' : '') + '</span>';
         if (t.depPending) res += '<br><span class="muted">' + esc(t.depPending) + '</span>';
-        return '<tr><td>' + esc(t.label || t.no) + '. ' + esc(t.title) + res + '</td><td>' + esc(t.status) + '</td><td>' + t.scanned + '/' + t.expected + '</td><td>' + btn + '</td></tr>';
-      }).join('') + '</table><button onclick="loadAdmin()">重新整理</button>' + url + '</div>';
+        return '<tr><td>' + esc(t.label || t.no) + '. ' + esc(t.title) + res + '</td><td>' + esc(t.status) + '</td><td>' + t.scanned + '/' + t.expected + '</td><td>' + btn + cancel + '</td></tr>';
+      }).join('') + '</table><button onclick="loadAdmin()">重新整理</button>' + url + '</div>' +
+      '<div class="card"><h1>會前重置</h1><p class="muted">試跑完、正式開會前使用：清空報到、投票、操作紀錄，所有議題回到「未開始」（含取消的題目）。<br>名冊、工作人員、設定不會動。清除前會自動複製一份「備份_」分頁。</p>' +
+      '<label>確認：請輸入「重置」兩個字</label><input id="rsWord" autocomplete="off"><button class="no" onclick="doReset()">會前重置</button><div id="rsOut"></div></div>';
   }).catch(function (m) { $('admin').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div></div>'; });
 }
 function setStatus(no, st) {
-  if (!confirm((st === '已宣布' ? '宣布議題 ' : '重新開啟議題 ') + no + '？' + (st === '已宣布' ? '\n宣布後，唱票人員將無法再更正此題。' : ''))) return;
+  var msg = { '已宣布': '宣布議題 ' + no + '？\n宣布後，唱票人員將無法再更正此題。', '統計中': '重新開啟議題 ' + no + '？',
+              '取消': '取消議題 ' + no + '？\n取消後投影與進度不再顯示，手機也不能掃這一題（之後可按「恢復」）。', '恢復': '恢復議題 ' + no + '？' }[st];
+  if (!confirm(msg)) return;
   call('setTopicStatus', AUTH, no, st).then(loadAdmin).catch(function (m) { alert(m); });
+}
+function doReset() {
+  var w = $('rsWord').value.trim();
+  if (w !== '重置') { $('rsOut').innerHTML = '<div class="err">請輸入「重置」兩個字</div>'; return; }
+  if (!confirm('確定要清空所有報到、投票紀錄，讓議題回到未開始？\n（會先自動備份）')) return;
+  $('rsOut').innerHTML = '<p class="muted">處理中…</p>';
+  call('resetMeeting', AUTH, w).then(function (r) {
+    $('rsOut').innerHTML = '<div class="card" style="background:#E1F5EE;margin:8px 0 0">完成重置<br>報到紀錄 清除 ' + r.cleared['報到紀錄'] + ' 筆<br>投票紀錄 清除 ' + r.cleared['投票紀錄'] + ' 筆<br>操作紀錄 清除 ' + r.cleared['操作紀錄'] + ' 筆<br>議題狀態 重設 ' + r.topics + ' 題' +
+      '<br><span class="muted">備份分頁：' + (r.backups.length ? esc(r.backups.join('、')) : '無（原本就沒有資料）') + '</span><br><span class="muted">上面的議題狀態請按「重新整理」；其他手機也重新整理一次</span></div>';
+    $('rsWord').value = '';
+  }).catch(function (m) { $('rsOut').innerHTML = '<div class="err">' + esc(m) + '</div>'; });
 }
 </script>
 </body>
