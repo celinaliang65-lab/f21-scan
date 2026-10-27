@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.9.2：登入不用選機號（人員＋密碼即可）
      v0.9.0：監票頁可「取消」議題（投影、進度不顯示，手機不能掃）；新增「會前重置」
      v0.8.3：GitHub 改為「載入器 index.html＋主程式 app.html」，每次開啟都抓最新版，不再被手機暫存擋住
      v0.8.2：GitHub 網頁自動檢查新版本，出現「有新版本，點這裡更新」
@@ -74,8 +75,6 @@
   <!-- 登入 -->
   <div id="vLogin" class="card">
     <h1 id="title">區權會現場系統</h1>
-    <label>機號</label>
-    <select id="lMachine"></select>
     <label>人員</label>
     <select id="lStaff"></select>
     <label>密碼（4 碼）</label>
@@ -120,7 +119,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.9.0';
+var PAGE_VERSION = 'v0.9.2';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -171,8 +170,6 @@ function boot() {
 function init() {
   $('title').textContent = (BOOT.community || '') + ' 現場系統';
   $('ver').textContent = '畫面 ' + PAGE_VERSION + '｜系統 ' + BOOT.version + '　案件 ' + BOOT.code;
-  var m = ''; for (var i = 1; i <= 12; i++) m += '<option value="' + i + '號機">' + i + ' 號機</option>';
-  $('lMachine').innerHTML = m;
   $('lStaff').innerHTML = BOOT.staff.map(function (s) { return '<option value="' + esc(s.id) + '">' + esc(s.name) + '（' + esc(s.role) + '）</option>'; }).join('');
   $('manualTopic').innerHTML = '<option value="">（請選擇）</option>' + BOOT.topics.filter(function (t) { return t.status !== '取消'; }).map(function (t) { return '<option value="' + t.no + '">議題 ' + esc(t.label || t.no) + '　' + esc(t.title) + '</option>'; }).join('');
   try { var saved = JSON.parse(sessionStorage.getItem('av_auth') || 'null'); if (saved) { AUTH = saved.auth; ME = saved.me; enter(); } } catch (e) {}
@@ -205,7 +202,7 @@ function doUpdate() { if (window.APP_FILE) location.reload(); else location.repl
 setTimeout(checkUpdate, 3000); setInterval(checkUpdate, 5 * 60 * 1000);
 
 function doLogin() {
-  var a = { machine: $('lMachine').value, staffId: $('lStaff').value, pin: $('lPin').value.trim() };
+  var a = { staffId: $('lStaff').value, pin: $('lPin').value.trim() };
   showErr('lErr', '');
   call('login', a).then(function (me) {
     AUTH = a; ME = me;
@@ -221,7 +218,7 @@ function logout() {
 }
 function enter() {
   $('vLogin').classList.add('hidden'); $('vMain').classList.remove('hidden');
-  $('who').textContent = ME.machine + '・' + ME.name + '（' + ME.role + '）';
+  $('who').textContent = ME.name + '（' + ME.role + '）';
   var rs = ME.roles || String(ME.role).split(/[、,，\/／+＋\s]+/);
   var modes = rs.indexOf('監票') >= 0 ? ['報到', '唱票', '管理', '進度'] : ['報到', '唱票'].filter(function (m) { return rs.indexOf(m) >= 0; }).concat(['進度']);
   $('tabs').innerHTML = modes.map(function (m) { return '<button onclick="setMode(\'' + m + '\')" id="tab_' + m + '">' + m + '</button>'; }).join('');
@@ -388,7 +385,7 @@ var CK = null;
 function checkinLookup(text) {
   call('lookupCheckin', AUTH, text).then(function (r) {
     CK = r;
-    var prev = r.previous.length ? '<div class="warn">⚠ 已報到過：' + r.previous.map(function (p) { return esc(p.time + ' ' + p.mode + (p.proxy ? '（' + p.proxy + '）' : '') + ' ' + p.machine); }).join('；') + '</div>' : '';
+    var prev = r.previous.length ? '<div class="warn">⚠ 已報到過：' + r.previous.map(function (p) { return esc(p.time + ' ' + p.mode + (p.proxy ? '（' + p.proxy + '）' : '')); }).join('；') + '</div>' : '';
     $('panel').innerHTML = '<div class="card"><div class="big">' + esc(r.unit) + '</div>' +
       '<div class="who-row"><span class="who-name">' + (r.seq !== '' && r.seq != null ? '<span class="seqtag" style="font-size:20px">NO.' + esc(seqTxt(r.seq)) + '</span>' : '') + esc(r.name) + '</span><span class="who-ratio">比例 ' + (r.ratio * 100).toFixed(2) + '%</span></div>' +
       (r.address ? '<div class="muted" style="font-size:16px;margin-bottom:6px">' + esc(r.address) + '</div>' : '') + prev +
@@ -424,7 +421,7 @@ function voteLookup(text, manualTopic) {
     if (r.state === 'locked') { $('panel').innerHTML = '<div class="card">' + head + '<div class="err">此議題已宣布結果，需由監票人員處理</div><button onclick="clearPanel()">繼續掃描</button></div>'; return; }
     if (r.state === 'exists') {
       var rec = r.record;
-      $('panel').innerHTML = '<div class="card">' + head + '<div class="warn">這張已登錄為「<b>' + esc(rec.result) + '</b>」<br>' + esc(rec.time + '　' + rec.machine + '　' + rec.staff) + '</div>' +
+      $('panel').innerHTML = '<div class="card">' + head + '<div class="warn">這張已登錄為「<b>' + esc(rec.result) + '</b>」<br>' + esc(rec.time + '　' + rec.staff) + '</div>' +
         '<button class="pri" onclick="clearPanel()">維持原結果</button>' + correctButtons(r.topic, rec) + '</div>';
       return;
     }
@@ -468,7 +465,7 @@ function submit(result) {
 function voteLookupRender() {
   var r = CUR, rec = r.record;
   $('panel').innerHTML = '<div class="card">' + band(r.topic) + '<div class="big">' + esc(r.unit) + '</div><div class="warn">另一台手機已登錄為「<b>' + esc(rec.result) + '</b>」<br>' +
-    esc(rec.time + '　' + rec.machine + '　' + rec.staff) + '</div><button class="pri" onclick="clearPanel()">維持原結果</button>' + correctButtons(r.topic, rec) + '</div>';
+    esc(rec.time + '　' + rec.staff) + '</div><button class="pri" onclick="clearPanel()">維持原結果</button>' + correctButtons(r.topic, rec) + '</div>';
 }
 function undo(id) {
   if (UNDO_TIMER) { clearInterval(UNDO_TIMER); UNDO_TIMER = null; }
