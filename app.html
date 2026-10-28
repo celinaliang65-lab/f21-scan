@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.9.6：報到加速：掃到信封立刻顯示（手機上直接查名冊）、報到完成後相機馬上恢復（結果顯示在上方橫條）
      v0.9.5：送出後相機馬上恢復，不用等；結果與「復原」改放上方橫條（按兩下才復原，防誤觸），掃下一張時收起
      v0.9.4：送出後「復原」倒數 5→2 秒，相機較快恢復
      v0.9.2：登入不用選機號（人員＋密碼即可）
@@ -126,7 +127,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.9.5';
+var PAGE_VERSION = 'v0.9.6';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -348,6 +349,7 @@ function loadIndex(force) {
       if (h.seq !== '' && h.seq != null) hay += 'NO' + seqTxt(h.seq) + '|#' + Number(h.seq) + '|';
       h.hay = hay; return h;
     }) };
+    IDX.map = {}; IDX.list.forEach(function (h) { IDX.map[h.unit] = h; });
     IDX_AT = Date.now(); return IDX;
   });
 }
@@ -391,10 +393,28 @@ function pickUnit(i) {
 
 /* ---------- 報到 ---------- */
 var CK = null;
+// v0.9.6：報到查詢改在手機上直接查（名冊已載入手機），掃到立刻顯示；名冊還沒載入才問伺服器
+function localCheckin(text) {
+  if (!IDX || !IDX.map) return null;
+  var t = String(text || '').trim(), p = t.split('|'), unit;
+  if (p.length === 3) {
+    if (BOOT && BOOT.code && p[0] !== BOOT.code) throw '這不是本場會議的信封（代號 ' + p[0] + '）';
+    if (Number(p[2]) !== 0) throw '這是選票的 QR，請掃信封標籤';
+    unit = p[1].trim();
+  } else if (p.length === 1 && t) unit = t.toUpperCase();
+  else return null;
+  var h = IDX.map[unit];
+  if (!h) return null;                                       // 本機找不到就交給伺服器判斷（會顯示正確的錯誤訊息）
+  var m = IDX.checked[unit];
+  return { unit: h.unit, name: h.name, ratio: h.ratio, address: h.address, seq: h.seq,
+           previous: m ? [{ time: '', mode: m === true ? '已報到' : m, proxy: '' }] : [] };
+}
 function checkinLookup(text) {
-  call('lookupCheckin', AUTH, text).then(function (r) {
+  var loc = null;
+  try { loc = localCheckin(text); } catch (m) { fail(m); return; }
+  (loc ? Promise.resolve(loc) : call('lookupCheckin', AUTH, text)).then(function (r) {
     CK = r;
-    var prev = r.previous.length ? '<div class="warn">⚠ 已報到過：' + r.previous.map(function (p) { return esc(p.time + ' ' + p.mode + (p.proxy ? '（' + p.proxy + '）' : '')); }).join('；') + '</div>' : '';
+    var prev = r.previous.length ? '<div class="warn">⚠ 已報到過：' + r.previous.map(function (p) { return esc((p.time ? p.time + ' ' : '') + p.mode + (p.proxy ? '（' + p.proxy + '）' : '')); }).join('；') + '</div>' : '';
     $('panel').innerHTML = '<div class="card"><div class="big">' + esc(r.unit) + '</div>' +
       '<div class="who-row"><span class="who-name">' + (r.seq !== '' && r.seq != null ? '<span class="seqtag" style="font-size:20px">NO.' + esc(seqTxt(r.seq)) + '</span>' : '') + esc(r.name) + '</span><span class="who-ratio">比例 ' + (r.ratio * 100).toFixed(2) + '%</span></div>' +
       (r.address ? '<div class="muted" style="font-size:16px;margin-bottom:6px">' + esc(r.address) + '</div>' : '') + prev +
@@ -414,9 +434,15 @@ function ckSubmit(mode) {
   var pn = mode === '委託' ? $('pName').value : '', pt = mode === '委託' ? $('pType').value : '', no = mode === '委託' ? $('pNo').value : '';
   call('doCheckin', AUTH, CK.unit, mode, pn, pt, no, '', secs()).then(function (r) {
     if (IDX) IDX.checked[CK.unit] = mode;
+    if (Date.now() - IDX_AT > 60000) loadIndex(true).catch(function () {});   // 背景更新名冊與報到狀態（其他報到桌的資料）
+    if (!r.warnings.length) {                        // 沒有提醒：面板直接收起、相機馬上恢復，結果顯示在上方橫條
+      showCkBar(CK.unit + ' ' + mode + '報到 ✓', LAST.t);
+      try { if (navigator.vibrate) navigator.vibrate(40); } catch (e) {}
+      clearPanel();
+      return;
+    }
     $('panel').innerHTML = '<div class="card"><div class="done"><div class="big">' + esc(CK.unit) + ' ✓</div>' + esc(mode) + '報到完成' + (r.status === '重複' ? '（重複，只計一次）' : '') + '</div>' +
       warnHtml(r.warnings) + '<button class="pri" onclick="clearPanel()">下一位</button></div>';
-    if (!r.warnings.length) setTimeout(function () { if (BUSY) clearPanel(); }, 2500);
   }).catch(fail);
 }
 
@@ -430,6 +456,10 @@ function showLastBar() {
   b.innerHTML = '<span>' + esc(x.r.unit) + ' → ' + esc(x.result) + ' ✓' + (x.note ? '<br><span style="font-size:14px;color:var(--amber)">' + esc(x.note) + '</span>' : '') + '</span>' +
     '<button id="undoBtn" class="gray" onclick="undoLast(this)">復原</button>';
   clearTimeout(ARM_T);
+}
+function showCkBar(msg, qr) {
+  LASTREC = { ck: true, qr: qr };
+  var b = $('lastbar'); b.className = 'lastbar'; b.innerHTML = '<span>' + esc(msg) + '</span>';
 }
 function hideLastBar() { LASTREC = null; clearTimeout(ARM_T); var b = $('lastbar'); if (b) { b.className = 'lastbar hidden'; b.innerHTML = ''; } }
 function undoLast(btn) {
