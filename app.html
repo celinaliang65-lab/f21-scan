@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.9.4：送出後「復原」倒數 5→2 秒，相機較快恢復
      v0.9.2：登入不用選機號（人員＋密碼即可）
      v0.9.0：監票頁可「取消」議題（投影、進度不顯示，手機不能掃）；新增「會前重置」
      v0.8.3：GitHub 改為「載入器 index.html＋主程式 app.html」，每次開啟都抓最新版，不再被手機暫存擋住
@@ -119,7 +120,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.9.2';
+var PAGE_VERSION = 'v0.9.4';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -413,6 +414,7 @@ function ckSubmit(mode) {
 
 /* ---------- 唱票 ---------- */
 var CUR = null;
+var UNDO_SHOW = 2;          // 送出後顯示「復原」幾秒，這段時間相機暫停（v0.9.4：5→2 秒，加快唱票）
 function voteLookup(text, manualTopic) {
   call('scanVote', AUTH, text, manualTopic).then(function (r) {
     CUR = r;
@@ -451,10 +453,10 @@ function submit(result) {
   var r = CUR;
   call('submitVote', AUTH, r.unit, r.topic.no, result, secs()).then(function (x) {
     if (x.state === 'exists') { CUR.state = 'exists'; CUR.record = x.record; voteLookupRender(); return; }
-    var sec = 5;
+    var sec = UNDO_SHOW;
     $('panel').innerHTML = '<div class="card">' + band(r.topic) + '<div class="done"><div class="big">' + esc(r.unit) + ' → ' + esc(x.result) + ' ✓</div>' +
       (x.note ? '<div class="warn">' + esc(x.note) + '</div>' : '') + '</div>' +
-      '<button id="undoBtn" class="gray" onclick="undo(\'' + x.id + '\')">復原（5）</button></div>';
+      '<button id="undoBtn" class="gray" onclick="undo(\'' + x.id + '\')">復原（' + UNDO_SHOW + '）</button></div>';
     UNDO_TIMER = setInterval(function () {
       sec--;
       if (sec <= 0) { clearPanel(); return; }
