@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.9.8：管理分頁手機版改為一題一張小卡（原本表格在手機上被擠成一字一行）
      v0.9.6：報到加速：掃到信封立刻顯示（手機上直接查名冊）、報到完成後相機馬上恢復（結果顯示在上方橫條）
      v0.9.5：送出後相機馬上恢復，不用等；結果與「復原」改放上方橫條（按兩下才復原，防誤觸），掃下一張時收起
      v0.9.4：送出後「復原」倒數 5→2 秒，相機較快恢復
@@ -72,6 +73,13 @@
   .pg-bar { height:8px; background:#eef0f3; border-radius:5px; margin:6px 0; } .pg-bar div { height:8px; border-radius:5px; background:#378ADD; }
   .pg-r { font-size:15px; color:var(--txt); }
   .hidden { display:none; }
+  .adm { border-bottom:1px solid var(--line); padding:10px 0; } .adm.off { color:#999; }
+  .adm-t { font-size:16px; line-height:1.4; margin-bottom:6px; }
+  .adm-r { display:flex; align-items:center; gap:8px; flex-wrap:nowrap; }
+  .adm-n { flex:1; font-size:14px; color:var(--sub); white-space:nowrap; }
+  .adm-btn { width:auto; margin:0; padding:8px 14px; font-size:15px; white-space:nowrap; flex:none; }
+  .adm-link { width:auto; margin:0; padding:4px 6px; font-size:13px; background:none; border:0; color:#6b7280; text-decoration:underline; white-space:nowrap; flex:none; }
+  .admin-url { word-break:break-all; }
   table { width:100%; border-collapse:collapse; font-size:14px; } td, th { border-bottom:1px solid var(--line); padding:6px 4px; text-align:left; }
 </style>
 </head>
@@ -127,7 +135,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.9.6';
+var PAGE_VERSION = 'v0.9.8';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -583,21 +591,24 @@ function loadProgress() {
 function loadAdmin() {
   $('admin').innerHTML = '<div class="card muted">載入中…</div>';
   call('adminTopics', AUTH).then(function (ts) {
-    var url = BOOT.url ? '<p class="muted">投影畫面網址：<br>' + esc(BOOT.url) + '?page=display</p>' : '';
-    $('admin').innerHTML = '<div class="card"><h1>議題狀態</h1><table><tr><th>議題</th><th>狀態</th><th>已唱</th><th></th></tr>' +
+    var url = BOOT.url ? '<p class="muted admin-url">投影畫面網址：<br>' + esc(BOOT.url) + '?page=display</p>' : '';
+    // v0.9.8：手機版改為一題一張小卡（原本四欄表格在手機上被擠成一字一行）
+    $('admin').innerHTML = '<div class="card"><h1>議題狀態</h1>' +
       ts.map(function (t) {
-        var sb = 'style="margin:0;padding:6px;font-size:14px"';
-        if (t.status === '取消') return '<tr style="color:#888"><td>' + esc(t.label || t.no) + '. ' + esc(t.title) + '</td><td>已取消</td><td>—</td><td><button class="gray" ' + sb + ' onclick="setStatus(' + t.no + ',\'恢復\')">恢復</button></td></tr>';
-        if (t.status === '免表決') return '<tr><td>' + esc(t.label || t.no) + '. ' + esc(t.title) + '<br><span class="muted">' + esc(t.skipReason) + '</span></td><td>免表決</td><td>—</td><td></td></tr>';
-        var cancel = t.status !== '已宣布' && !t.scanned ? '<button style="margin:4px 0 0;padding:4px;font-size:13px;background:none;border:0;color:#6b7280;text-decoration:underline;box-shadow:none" onclick="setStatus(' + t.no + ',\'取消\')">取消此題</button>' : '';
-        var btn = t.status === '已宣布' ? '<button class="gray" style="margin:0;padding:6px;font-size:14px" onclick="setStatus(' + t.no + ',\'統計中\')">重新開啟</button>'
-                                        : '<button class="pri" style="margin:0;padding:6px;font-size:14px" onclick="setStatus(' + t.no + ',\'已宣布\')">宣布結果</button>';
+        var head = '<div class="adm-t"><b>' + esc(t.label || t.no) + '</b>　' + esc(t.title) + '</div>';
+        if (t.status === '取消') return '<div class="adm off">' + head + '<div class="adm-r"><span class="pill p-wait">已取消</span><span class="adm-n"></span>' +
+          '<button class="gray adm-btn" onclick="setStatus(' + t.no + ',\'恢復\')">恢復</button></div></div>';
+        if (t.status === '免表決') return '<div class="adm">' + head + '<div class="muted">' + esc(t.skipReason) + '</div><div class="adm-r"><span class="pill p-ng">免表決</span></div></div>';
+        var pill = t.status === '已宣布' ? 'p-done' : t.status === '統計中' ? 'p-run' : 'p-wait';
+        var cancel = t.status !== '已宣布' && !t.scanned ? '<button class="adm-link" onclick="setStatus(' + t.no + ',\'取消\')">取消此題</button>' : '';
+        var btn = t.status === '已宣布' ? '<button class="gray adm-btn" onclick="setStatus(' + t.no + ',\'統計中\')">重新開啟</button>'
+                                        : '<button class="pri adm-btn" onclick="setStatus(' + t.no + ',\'已宣布\')">宣布結果</button>';
         var res = '';
-        if (t.kind === '表決' && t.scanned) res = '<br><span class="muted">同意 ' + t['同意'].votes + '／不同意 ' + t['不同意'].votes + '　' + (t.pass ? '通過' : '未通過') + '</span>';
-        if (t.kind === '方案' && t.scanned) res = '<br><span class="muted">' + t.options.map(function (o) { return esc(o.label) + ' ' + o.votes; }).join('／') + '　' + (t.tie ? '同票' : t.winner ? esc(t.winner) + '較高' : '') + '</span>';
-        if (t.depPending) res += '<br><span class="muted">' + esc(t.depPending) + '</span>';
-        return '<tr><td>' + esc(t.label || t.no) + '. ' + esc(t.title) + res + '</td><td>' + esc(t.status) + '</td><td>' + t.scanned + '/' + t.expected + '</td><td>' + btn + cancel + '</td></tr>';
-      }).join('') + '</table><button onclick="loadAdmin()">重新整理</button>' + url + '</div>' +
+        if (t.kind === '表決' && t.scanned) res = '<div class="muted">同意 ' + t['同意'].votes + '／不同意 ' + t['不同意'].votes + '　' + (t.pass ? '通過' : '未通過') + '</div>';
+        if (t.kind === '方案' && t.scanned) res = '<div class="muted">' + t.options.map(function (o) { return esc(o.label) + ' ' + o.votes; }).join('／') + '　' + (t.tie ? '同票' : t.winner ? esc(t.winner) + '較高' : '') + '</div>';
+        if (t.depPending) res += '<div class="muted">' + esc(t.depPending) + '</div>';
+        return '<div class="adm">' + head + res + '<div class="adm-r"><span class="pill ' + pill + '">' + esc(t.status) + '</span><span class="adm-n">已唱 ' + t.scanned + '/' + t.expected + '</span>' + cancel + btn + '</div></div>';
+      }).join('') + '<button onclick="loadAdmin()">重新整理</button>' + url + '</div>' +
       '<div class="card"><h1>會前重置</h1><p class="muted">試跑完、正式開會前使用：清空報到、投票、操作紀錄，所有議題回到「未開始」（含取消的題目）。<br>名冊、工作人員、設定不會動。清除前會自動複製一份「備份_」分頁。</p>' +
       '<label>確認：請輸入「重置」兩個字</label><input id="rsWord" autocomplete="off"><button class="no" onclick="doReset()">會前重置</button><div id="rsOut"></div></div>';
   }).catch(function (m) { $('admin').innerHTML = '<div class="card"><div class="err">' + esc(m) + '</div></div>'; });
