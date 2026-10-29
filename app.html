@@ -4,6 +4,7 @@
      1. 貼在 Apps Script 裡（Google 網址）：可登入、手動輸入、拍照掃描；但 Google 網頁外框不允許即時相機
      2. 放在 GitHub Pages 等外部網址（建議）：即時相機可用；透過 Apps Script 的 API 讀寫同一份試算表
         API 網址：改下面的 API_URL，或網址後面加 ?api=部署ID（會記在這支手機）
+     v0.9.9：相機畫面改為正方形（最大 340px，只裁顯示範圍，掃描不受影響）
      v0.9.8：管理分頁手機版改為一題一張小卡（原本表格在手機上被擠成一字一行）
      v0.9.6：報到加速：掃到信封立刻顯示（手機上直接查名冊）、報到完成後相機馬上恢復（結果顯示在上方橫條）
      v0.9.5：送出後相機馬上恢復，不用等；結果與「復原」改放上方橫條（按兩下才復原，防誤觸），掃下一張時收起
@@ -52,8 +53,11 @@
   .lastbar button.arm { background:var(--red); color:#fff; -webkit-text-fill-color:#fff; }
   .done { background:#E1F5EE; color:var(--green); border-radius:10px; padding:16px; text-align:center; }
   .muted { color:var(--sub); font-size:14px; }
-  #reader { width:100%; border-radius:10px; overflow:hidden; border:4px solid transparent; transition:border-color .15s; }
-  #reader.hit { border-color:#1D9E75; }
+  /* v0.9.9：相機畫面裁成正方形（只裁顯示範圍，掃描框與辨識不受影響） */
+  #camwrap { width:100%; max-width:340px; margin:0 auto; aspect-ratio:1 / 1; overflow:hidden; border-radius:10px; border:4px solid transparent; transition:border-color .15s; background:#000; }
+  #camwrap.hidden { display:none; }
+  #camwrap.hit { border-color:#1D9E75; }
+  #reader { width:100%; }
   .who-row { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin:4px 0 6px; flex-wrap:wrap; }
   .who-name { font-size:24px; font-weight:700; } .who-ratio { font-size:19px; color:var(--txt); }
   #suggest .sg { color:var(--txt); -webkit-text-fill-color:var(--txt); }   /* iPhone 按鈕文字預設藍色，改回深色 */
@@ -106,7 +110,7 @@
 
     <div id="scanBox" class="card">
       <div id="lastbar" class="lastbar hidden"></div>
-      <div id="reader"></div>
+      <div id="camwrap" class="hidden"><div id="reader"></div></div>
       <div class="row">
         <button id="camBtn" class="gray" onclick="toggleCam()">開啟相機</button>
         <button class="gray" onclick="$('photo').click()">拍照掃描</button>
@@ -135,7 +139,7 @@
 <script>
 // 外部網址模式用：Apps Script 部署網址（或只填部署 ID）
 var API_URL = 'AKfycbx7LtX7NcmDN83ey5ZL7J5dXfcdZ3UWeCWXd4OU-UAgkTOr5n57QGmazok0g2j7a9YM';   // 未來21 的 Apps Script 部署 ID
-var PAGE_VERSION = 'v0.9.8';
+var PAGE_VERSION = 'v0.9.9';
 var BOOT = null, API_MODE = false;
 try { BOOT = JSON.parse(document.getElementById('bootData').textContent); } catch (e) { API_MODE = true; }
 var AUTH = null, ME = null, MODE = '唱票', BUSY = false, LAST = { t: '', at: 0 }, CAM = null, UNDO_TIMER = null;
@@ -266,15 +270,16 @@ function startCam() {
   try { $('code').blur(); } catch (e) {}
   LAST_MANUAL = false;
   var fmt = (typeof Html5QrcodeSupportedFormats !== 'undefined') ? [Html5QrcodeSupportedFormats.QR_CODE] : undefined;
+  $('camwrap').classList.remove('hidden');
   CAM = new Html5Qrcode('reader', { formatsToSupport: fmt, experimentalFeatures: { useBarCodeDetectorIfSupported: true }, verbose: false });
   CAM.start({ facingMode: 'environment' }, {
       fps: 20,
       qrbox: function (w, h) { var s = Math.floor(Math.min(w, h) * 0.8); return { width: s, height: s }; },
       videoConstraints: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
     }, function (text) { handle(text, false); })
-    .then(function () { $('camBtn').textContent = '關閉相機'; showErr('scanErr', ''); })
+    .then(function () { $('camBtn').textContent = '關閉相機'; showErr('scanErr', ''); fitCam(); setTimeout(fitCam, 400); setTimeout(fitCam, 1200); })
     .catch(function (e) {
-      CAM = null;
+      CAM = null; $('camwrap').classList.add('hidden');
       showErr('scanErr', API_MODE ? '無法開啟相機，請確認已允許相機權限；也可以按「拍照掃描」或手動輸入'
                                   : 'Google 網址不能使用即時相機：請改用 GitHub 掃描網址，或按「拍照掃描」、手動輸入');
     });
@@ -303,11 +308,22 @@ function beep(ok) {
   try { if (navigator.vibrate) navigator.vibrate(ok ? 80 : [60, 60, 60]); } catch (e) {}
 }
 function camPause() { try { if (CAM && CAM.getState && CAM.getState() === 2) CAM.pause(true); } catch (e) {} }
-function camResume() { try { if (CAM && CAM.getState && CAM.getState() === 3) CAM.resume(); } catch (e) {} $('reader').classList.remove('hit'); }
+function camResume() { try { if (CAM && CAM.getState && CAM.getState() === 3) CAM.resume(); } catch (e) {} $('camwrap').classList.remove('hit'); }
+// 直式手機的相機畫面是長方形：把畫面往上移，只露出中間的正方形（掃描框本來就在正中央）
+function fitCam() {
+  var w = $('camwrap'), r = $('reader');
+  if (!w || !r || w.classList.contains('hidden')) return;
+  var W = w.clientWidth, H = r.offsetHeight;
+  if (!H) return;
+  if (H >= W) { w.style.aspectRatio = '1 / 1'; r.style.marginTop = -Math.round((H - W) / 2) + 'px'; }
+  else { w.style.aspectRatio = 'auto'; r.style.marginTop = '0'; }   // 橫式畫面本來就不高，照原樣
+}
+window.addEventListener('resize', function () { setTimeout(fitCam, 200); });
 function stopCam() {
   if (!CAM) return;
   var c = CAM; CAM = null;
-  c.stop().then(function () { c.clear(); }).catch(function () {});
+  c.stop().then(function () { c.clear(); $('reader').style.marginTop = '0'; }).catch(function () {});
+  $('camwrap').classList.add('hidden'); $('camwrap').classList.remove('hit');
   $('camBtn').textContent = '開啟相機';
 }
 
@@ -323,7 +339,7 @@ function handle(text, manual) {
   LAST_MANUAL = !!manual;
   SCAN_AT = Date.now();      // 掃到（或輸入完按 Enter）的時間，送出時一起傳回去算處理秒數
   if (!manual) { try { $('code').blur(); } catch (e) {} }
-  if (!manual) { beep(true); $('reader').classList.add('hit'); camPause(); }
+  if (!manual) { beep(true); $('camwrap').classList.add('hit'); camPause(); }
   var shown = (String(text).split('|')[1] || text).trim();
   $('panel').innerHTML = '<div class="card"><div class="reading">已讀到 ' + esc(shown) + '<br><span style="font-size:15px;font-weight:400">查詢中…</span></div></div>';
   if (MODE === '報到') checkinLookup(text);
